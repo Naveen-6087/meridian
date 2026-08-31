@@ -1,0 +1,9 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan.out
+drift.tfplan
+crash.log
+__pycache__/
+*.pyc
