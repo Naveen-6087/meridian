@@ -1,0 +1,166 @@
+# Drift corpus: each scenario is a real change applied to the live GCP
+# infrastructure via `gcloud`, independent of the Terraform-declared state.
+# category: compute | network | storage | identity
+# impact:   dangerous | harmless   (ground-truth label used for evaluation)
+# severity: 1 (low) .. 5 (critical) -- ground-truth label used for ranking
+
+scenarios:
+  - id: net-01
+    category: network
+    impact: dangerous
+    severity: 5
+    description: "SSH firewall rule opened to the entire internet (0.0.0.0/0) instead of the administrative CIDR"
+    inject:
+      - gcloud compute firewall-rules update p14-allow-ssh --source-ranges=0.0.0.0/0
+    revert:
+      - gcloud compute firewall-rules update p14-allow-ssh --source-ranges=203.0.113.0/24
+
+  - id: net-02
+    category: network
+    impact: dangerous
+    severity: 4
+    description: "New firewall rule opening all TCP ports to the internet, added outside Terraform (classic 'debug session, never closed')"
+    inject:
+      - gcloud compute firewall-rules create p14-debug-allow-all --network=p14-baseline-net --allow=tcp:0-65535 --source-ranges=0.0.0.0/0
+    revert:
+      - gcloud compute firewall-rules delete p14-debug-allow-all --quiet
+
+  - id: net-03
+    category: network
+    impact: harmless
+    severity: 1
+    description: "Firewall rule description text edited manually (cosmetic, no access change)"
+    inject:
+      - gcloud compute firewall-rules update p14-allow-ssh --description="temporary note left by oncall"
+    revert:
+      - gcloud compute firewall-rules update p14-allow-ssh --description=""
+
+  - id: net-04
+    category: network
+    impact: harmless
+    severity: 1
+    description: "Firewall rule priority changed but no allow/deny semantics changed"
+    inject:
+      - gcloud compute firewall-rules update p14-allow-ssh --priority=1100
+    revert:
+      - gcloud compute firewall-rules update p14-allow-ssh --priority=1000
+
+  - id: identity-01
+    category: identity
+    impact: dangerous
+    severity: 5
+    description: "Application service account granted project Owner role directly (privilege escalation)"
+    inject:
+      - gcloud projects add-iam-policy-binding p14-drift-ranking --member=serviceAccount:p14-app-sa@p14-drift-ranking.iam.gserviceaccount.com --role=roles/owner
+    revert:
+      - gcloud projects remove-iam-policy-binding p14-drift-ranking --member=serviceAccount:p14-app-sa@p14-drift-ranking.iam.gserviceaccount.com --role=roles/owner
+
+  - id: identity-02
+    category: identity
+    impact: dangerous
+    severity: 4
+    description: "allUsers granted public read on the storage bucket outside Terraform"
+    inject:
+      - gcloud storage buckets add-iam-policy-binding gs://p14-drift-ranking-p14-baseline-bucket --member=allUsers --role=roles/storage.objectViewer
+    revert:
+      - gcloud storage buckets remove-iam-policy-binding gs://p14-drift-ranking-p14-baseline-bucket --member=allUsers --role=roles/storage.objectViewer
+
+  - id: identity-03
+    category: identity
+    impact: harmless
+    severity: 1
+    description: "Service account display name edited manually"
+    inject:
+      - gcloud iam service-accounts update p14-app-sa@p14-drift-ranking.iam.gserviceaccount.com --display-name="P14 application service account (edited)"
+    revert:
+      - gcloud iam service-accounts update p14-app-sa@p14-drift-ranking.iam.gserviceaccount.com --display-name="P14 application service account"
+
+  - id: identity-04
+    category: identity
+    impact: harmless
+    severity: 2
+    description: "A second, narrowly-scoped IAM role (logging viewer) added to the app service account -- a legitimate-looking but undeclared change"
+    inject:
+      - gcloud projects add-iam-policy-binding p14-drift-ranking --member=serviceAccount:p14-app-sa@p14-drift-ranking.iam.gserviceaccount.com --role=roles/logging.viewer
+    revert:
+      - gcloud projects remove-iam-policy-binding p14-drift-ranking --member=serviceAccount:p14-app-sa@p14-drift-ranking.iam.gserviceaccount.com --role=roles/logging.viewer
+
+  - id: storage-01
+    category: storage
+    impact: dangerous
+    severity: 4
+    description: "Uniform bucket-level access disabled, re-enabling legacy ACLs (weakens access control model)"
+    inject:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --no-uniform-bucket-level-access
+    revert:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --uniform-bucket-level-access
+
+  - id: storage-02
+    category: storage
+    impact: dangerous
+    severity: 3
+    description: "Object versioning silently enabled, causing unbounded storage growth and cost drift over time"
+    inject:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --versioning
+    revert:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --no-versioning
+
+  - id: storage-03
+    category: storage
+    impact: harmless
+    severity: 1
+    description: "Bucket label value edited manually (cosmetic)"
+    inject:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --update-labels=environment=experiment-edited
+    revert:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --update-labels=environment=experiment
+
+  - id: storage-04
+    category: storage
+    impact: harmless
+    severity: 2
+    description: "Storage class changed from STANDARD to NEARLINE outside Terraform (cost-relevant but not security-relevant)"
+    inject:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --default-storage-class=NEARLINE
+    revert:
+      - gcloud storage buckets update gs://p14-drift-ranking-p14-baseline-bucket --default-storage-class=STANDARD
+
+  - id: compute-01
+    category: compute
+    impact: dangerous
+    severity: 5
+    description: "VM re-tagged onto the firewall's target tag set, exposing it to the wide-open debug rule (net-02) once combined -- a multi-resource composite risk"
+    inject:
+      - gcloud compute instances add-tags p14-baseline-vm --tags=p14-baseline,debug-access --zone=us-central1-a
+    revert:
+      - gcloud compute instances remove-tags p14-baseline-vm --tags=debug-access --zone=us-central1-a
+
+  - id: compute-02
+    category: compute
+    impact: dangerous
+    severity: 4
+    description: "Boot disk resized upward outside Terraform, drifting cost and violating capacity assumptions"
+    inject:
+      - gcloud compute disks resize p14-baseline-vm --size=50GB --zone=us-central1-a
+    revert:
+      - echo "disk size increases are not reversible in GCE; documented as a one-way drift for this corpus"
+
+  - id: compute-03
+    category: compute
+    impact: harmless
+    severity: 1
+    description: "VM label value edited manually (cosmetic)"
+    inject:
+      - gcloud compute instances add-labels p14-baseline-vm --labels=environment=experiment-edited --zone=us-central1-a
+    revert:
+      - gcloud compute instances add-labels p14-baseline-vm --labels=environment=experiment --zone=us-central1-a
+
+  - id: compute-04
+    category: compute
+    impact: harmless
+    severity: 2
+    description: "Deletion protection flag toggled on the VM (defensive change, not a weakening)"
+    inject:
+      - gcloud compute instances update p14-baseline-vm --deletion-protection --zone=us-central1-a
+    revert:
+      - gcloud compute instances update p14-baseline-vm --no-deletion-protection --zone=us-central1-a
